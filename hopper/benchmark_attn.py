@@ -15,9 +15,33 @@ except ImportError:
 from einops import rearrange, repeat
 
 # from flash_attn.utils.benchmark import benchmark_forward, benchmark_backward, benchmark_combined, benchmark_all, benchmark_fwd_bwd, pytorch_profiler
-from flash_attn.utils.benchmark import benchmark_forward, benchmark_backward, benchmark_combined, benchmark_all, benchmark_fwd_bwd, pytorch_profiler
-from flash_attn.flash_attn_interface import flash_attn_func
+# from flash_attn.utils.benchmark import benchmark_forward
+# from flash_attn.flash_attn_interface import flash_attn_func
 from flash_attn_interface import flash_attn_func as flash_attn_func_v3, flash_attn_varlen_func as flash_attn_varlen_func_v3
+
+flash_attn_func = flash_attn_func_v3
+
+def benchmark_forward(
+    fn, *inputs, repeats=10, desc="", verbose=True, amp=False, amp_dtype=torch.float16, **kwinputs
+):
+    import torch.utils.benchmark as benchmark
+    """Use Pytorch Benchmark on the forward pass of an arbitrary function."""
+    if verbose:
+        print(desc, "- Forward pass")
+
+    def amp_wrapper(*inputs, **kwinputs):
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp):
+            fn(*inputs, **kwinputs)
+
+    t = benchmark.Timer(
+        stmt="fn_amp(*inputs, **kwinputs)",
+        globals={"fn_amp": amp_wrapper, "inputs": inputs, "kwinputs": kwinputs},
+        num_threads=torch.get_num_threads(),
+    )
+    m = t.timeit(repeats)
+    if verbose:
+        print(m)
+    return t, m
 
 # Need to install triton nightly:
 # pip install -U --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ triton-nightly
@@ -182,7 +206,7 @@ causal = False
 dtype = torch.float16
 device = 'cuda'
 verbose = False
-batch_size = 2
+batch_size = 4
 # seqlen = 2048
 seqlen = 8192
 # seqlen = 4096
@@ -192,13 +216,14 @@ dim = 2048
 # headdim = 64
 headdim = 256
 
-for mode in ['fwd', 'bwd']:
+for mode in ['fwd']:
 # for mode in ['bwd']:
-    for headdim in [64, 128, 256]:
+    for headdim in [128]:
     # for headdim in [128]:
-        for seqlen in [1024, 2048, 4096, 8192, 16384, 32768]:
+        for seqlen in [2048, 4096, 8192, 16384]:
         # for seqlen in [8192]:
-            nheads = dim // headdim
+            # nheads = dim // headdim
+            nheads = 32
             # nheads = 24
             # headdim = 64
             # batch_size = 64
@@ -225,7 +250,7 @@ for mode in ['fwd', 'bwd']:
     
             bench_fn = benchmark_forward if mode == 'fwd' else partial(benchmark_backward, grad=grad)
 
-            for causal in [False, True]:
+            for causal in [False]:
             # for causal in [True]:
                 print(f"\n### {mode = }, {batch_size = }, {headdim = }, {seqlen = }, {causal = } ###")
                 # For var-seq-len
@@ -298,10 +323,10 @@ for mode in ['fwd', 'bwd']:
                     if mode == 'bwd':
                         grad_var = grad.reshape(-1, grad.shape[-2], grad.shape[-1])
                         bench_var_fn = partial(benchmark_backward, grad=grad_var)
-                    _, m1_var = bench_var_fn(flash_attn_varlen_func_v3, q_var, k_var, v_var, cu_seqlens, cu_seqlens, seqlen, seqlen, causal=causal, repeats=repeats, verbose=verbose, desc='Fav3 var len')
+                    # _, m1_var = bench_var_fn(flash_attn_varlen_func_v3, q_var, k_var, v_var, cu_seqlens, cu_seqlens, seqlen, seqlen, causal=causal, repeats=repeats, verbose=verbose, desc='Fav3 var len')
 
                 # pytorch_profiler(flash_attn_func_v3, q, k, v, causal=causal, backward=False)
-                print(f'Fav2: {m0.mean * 1e3:.3f}ms, {(f / m0.mean * 1e-12):.1f} TFLOPS')
+                # print(f'Fav2: {m0.mean * 1e3:.3f}ms, {(f / m0.mean * 1e-12):.1f} TFLOPS')
                 if headdim <= 128:
                     if mode == 'fwd' and triton_attention is not None and nheads_kv == nheads:
                         print(f'Triton: {m3.mean * 1e3:.3f}ms, {(f / m3.mean * 1e-12):.1f} TFLOPS')
@@ -310,5 +335,5 @@ for mode in ['fwd', 'bwd']:
                         print(f'CuDNN varlen: {m2_var.mean * 1e3:.3f}ms, {(f / m2_var.mean * 1e-12):.1f} TFLOPS')
                 if headdim <= 128 or mode == 'fwd':
                     print(f'Fav3: {m1.mean * 1e3:.3f}ms, {(f / m1.mean * 1e-12):.1f} TFLOPS')
-                    print(f'Fav3 varlen: {m1_var.mean * 1e3:.3f}ms, {(f / m1_var.mean * 1e-12):.1f} TFLOPS')
+                    # print(f'Fav3 varlen: {m1_var.mean * 1e3:.3f}ms, {(f / m1_var.mean * 1e-12):.1f} TFLOPS')
     
