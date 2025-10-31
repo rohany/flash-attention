@@ -40,7 +40,7 @@ flash_attn_func = None
 
 from triton.testing import do_bench
 
-def time_fwd(func, *args, repeats=30, verbose=True, desc="", **kwargs):
+def time_fwd(func, *args, repeats=1000, verbose=True, desc="", **kwargs):
     # # Warmup
     # for _ in range(5):
     #     func(*args, **kwargs)
@@ -58,7 +58,7 @@ def time_fwd(func, *args, repeats=30, verbose=True, desc="", **kwargs):
     # time_f = benchmark_forward(lambda: graph.replay(), repeats=repeats, verbose=verbose, desc=desc)
     # # return time_f[1].mean
     # return time_f[1]
-    return Timing(do_bench(lambda: func(*args, **kwargs), warmup=5, rep=repeats) * 1e-3)
+    return Timing(do_bench(lambda: func(*args, **kwargs), warmup=100, rep=repeats) * 1e-3)
 
 
 def flops(batch, nheads, seqlen_q, seqlen_k, headdim, headdim_v, causal=False, window_size=(None, None)):
@@ -218,22 +218,23 @@ def cudnn_spda_bwd_setup(q, k, v, o, g, lse, causal=False, window_size_left=None
 
 
 torch.manual_seed(0)
-repeats = 10
+repeats = 1000
 dropout_p = 0.0
 causal = False
-dtype = torch.bfloat16
+dtype = torch.float16
 # dtype = torch.float8_e4m3fn
-dtype_gen = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
+# dtype_gen = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
+dtype_gen = torch.float16
 device = 'cuda'
 verbose = True
 varlen = False
-has_backward = True
+has_backward = False
 page_size = None
 # page_size = 128
 softcap = 0.0
 V_colmajor = False
 deterministic = False
-batch_size = 2
+batch_size = 4
 # seqlen = 2048
 seqlen = 8192
 # seqlen = 4096
@@ -241,13 +242,13 @@ seqlen = 8192
 dim = 2048
 # headdim = 128
 # headdim = 64
-headdim = 256
+headdim = 128
 # for headdim in [64, 128, 256]:
 # bs_seqlen_vals = [(32, 512), (16, 1024), (8, 2048), (4, 4096), (2, 8192), (1, 16384)]
 # bs_seqlen_vals = [(32, 1024), (16, 2048), (8, 4096), (4, 8192), (2, 16384), (1, 32768)]
 # bs_seqlen_vals = [(32, 512), (16, 1024)]
 # bs_seqlen_vals = [(2, 64 * 132)]
-bs_seqlen_vals = [(4, 8192)]
+bs_seqlen_vals = [(4, 2048), (4, 4096), (4, 8192), (4, 16384)]
 # bs_seqlen_vals = [(1, 16 * 1024)]
 time_f = {}
 time_b = {}
@@ -260,7 +261,7 @@ time_b = {}
 # for headdim in [64, 96, 128, 192, 256]:
 for headdim in [128]:
     # nheads = dim // headdim
-    nheads = 32 if headdim <= 64 else 16 if headdim <= 192 else 8
+    nheads = 32
     # nheads = 128
     # headdim = 64
     # batch_size = 64
@@ -271,7 +272,7 @@ for headdim in [128]:
     # nheads_kv = nheads // 8
     # nheads_kv = 1
     # headdim_v = headdim
-    headdim_v = 128 if headdim == 192 else headdim
+    headdim_v = 128
     # headdim_v = 512
     has_qv = headdim == 64 and headdim_v == 512
     # has_qv = False
@@ -282,7 +283,8 @@ for headdim in [128]:
         num_splits = 0
         # window_size = (-1, -1)
         window_size = (None, None)
-        window_size_fa = (-1, -1)
+        # window_size_fa = (-1, -1)
+        window_size_fa = (None, None)
         # window_size = (seqlen // 2 - 1, 0)
         pack_gqa = None
         # seqlen_q = 64
@@ -290,6 +292,7 @@ for headdim in [128]:
         leftpad_k = None
         # leftpad_k = torch.full((batch_size,), 0, device=device, dtype=torch.int32)
         q = torch.randn(batch_size, seqlen_q, nheads, headdim, device=device, dtype=dtype_gen, requires_grad=has_backward)
+        # print(q.shape)
         k = torch.randn(batch_size, seqlen, nheads_kv, headdim, device=device, dtype=dtype_gen, requires_grad=has_backward)
         v = torch.randn(batch_size, seqlen, nheads_kv, headdim_v, device=device, dtype=dtype_gen, requires_grad=has_backward)
         q, k, v = [x.detach().to(dtype).requires_grad_(has_backward) for x in [q, k, v]]
@@ -321,7 +324,7 @@ for headdim in [128]:
             page_table = None
 
         # for causal in [False, True]:
-        for causal in [True]:
+        for causal in [False]:
             print(f"\n### {headdim = }, {causal = }, {seqlen = } ###")
             nFLOPS = flops(batch_size, nheads, seqlen_q, seqlen, headdim if not has_qv else headdim + headdim_v, headdim_v, causal=causal, window_size=window_size)
             if cudnn is not None:
@@ -372,7 +375,7 @@ for headdim in [128]:
                 time_f[(causal, headdim, batch_size, seqlen), "Flash3"] = m1.mean
             if flash_attn_func_python is not None:
                 if not varlen:
-                    m1_py = time_fwd(flash_attn_func_python, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, causal=causal, window_size=window_size, learnable_sink=sinks, softcap=softcap, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3 python')
+                    m1_py = time_fwd(flash_attn_func_python, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, causal=causal, window_size=window_size, learnable_sink=sinks, softcap=softcap, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3 python', )
                 else:
                     m1_py = time_fwd(flash_attn_varlen_func_python, q_unpad, k_unpad if page_size is None else k_paged, v_unpad if page_size is None else v_paged, cu_seqlens_q, cu_seqlens_k, page_table=page_table, causal=causal, window_size=window_size, softcap=softcap, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3 python')
             if dtype != torch.float8_e4m3fn and headdim == headdim_v and flash_attn_func_v3 is not None and has_backward:
