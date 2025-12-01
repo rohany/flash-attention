@@ -39,6 +39,8 @@ except ImportError:
 
 if torch.cuda.get_device_capability()[0] != 9:
     flash_attn_func_v3 = None
+if torch.cuda.get_device_capability()[0] != 10:
+    flash_attn_func_python = None
 # flash_attn_func_v3 = None
 
 flash_attn_func = None
